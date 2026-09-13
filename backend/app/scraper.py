@@ -14,17 +14,30 @@ HEADERS = {"User-Agent": settings.sec_user_agent, "Accept-Encoding": "gzip, defl
 CUSIP_TICKERS = {"037833100":"AAPL", "023135106":"AMZN", "02079K305":"GOOGL", "02079K107":"GOOG", "025816109":"AXP", "060505104":"BAC", "191216100":"KO", "594918104":"MSFT", "67066G104":"NVDA", "88160R101":"TSLA", "30303M102":"META", "478160104":"JNJ", "931142103":"WMT", "084670702":"BRK.B"}
 _rate_lock = asyncio.Lock()
 _last_request = 0.0
+SEC_REQUEST_INTERVAL_SECONDS = 1.0
+SEC_RETRY_ATTEMPTS = 5
 
 async def sec_get(client, url):
-    # Globally space every request across parallel investors below SEC's 10/s cap.
+    """Fetch SEC data slowly and back off when a shared cloud IP is throttled."""
     global _last_request
     async with _rate_lock:
-        now = asyncio.get_running_loop().time()
-        await asyncio.sleep(max(0, .125 - (now - _last_request)))
-        _last_request = asyncio.get_running_loop().time()
-    response = await client.get(url, headers=HEADERS, timeout=30)
-    response.raise_for_status()
-    return response
+        for attempt in range(SEC_RETRY_ATTEMPTS):
+            now = asyncio.get_running_loop().time()
+            await asyncio.sleep(max(0, SEC_REQUEST_INTERVAL_SECONDS - (now - _last_request)))
+            response = await client.get(url, headers=HEADERS, timeout=30)
+            _last_request = asyncio.get_running_loop().time()
+            if response.status_code != 429:
+                response.raise_for_status()
+                return response
+            retry_after = response.headers.get("Retry-After")
+            try:
+                delay = max(15.0, float(retry_after or 0))
+            except ValueError:
+                delay = 15.0
+            print(f"SEC rate limit reached; retrying in {delay:.0f}s (attempt {attempt + 1}/{SEC_RETRY_ATTEMPTS}).")
+            await asyncio.sleep(delay)
+        response.raise_for_status()
+        return response
 
 def seed_investors():
     with SessionLocal() as db:
@@ -43,7 +56,7 @@ def text_of(node, tag):
     return ""
 
 async def filing_records(client, cik):
-    """Return five recent original 13F reports, including archived submission files."""
+    """Return five recent 13F reports, including amendments and archived files."""
     submission = (await sec_get(client, f"https://data.sec.gov/submissions/CIK{cik.zfill(10)}.json")).json()
     groups = [submission.get("filings", {}).get("recent", {})]
     for archive in submission.get("filings", {}).get("files", []):
@@ -52,7 +65,8 @@ async def filing_records(client, cik):
     records = []
     for group in groups:
         for i, form in enumerate(group.get("form", [])):
-            if form == "13F-HR": records.append({"accession":group["accessionNumber"][i], "date":date.fromisoformat(group["filingDate"][i])})
+            if form.startswith("13F-HR"):
+                records.append({"accession":group["accessionNumber"][i], "date":date.fromisoformat(group["filingDate"][i])})
     return sorted({item["accession"]:item for item in records}.values(), key=lambda item:item["date"], reverse=True)[:5]
 
 async def information_table(client, cik, accession):
@@ -137,7 +151,9 @@ async def refresh_all():
             if key in titles: duplicates.add(key)
             else: titles[key] = record.get("ticker")
         titles = {key:value for key,value in titles.items() if key not in duplicates}
-        semaphore = asyncio.Semaphore(3)
+        # A sequential initial import is deliberate: shared cloud IP addresses
+        # can be throttled even below the SEC's published request ceiling.
+        semaphore = asyncio.Semaphore(1)
         async def refresh_investor(investor):
             try:
                 async with semaphore:

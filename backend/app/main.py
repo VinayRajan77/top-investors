@@ -33,6 +33,14 @@ async def run_refresh():
     finally:
         refresh_state.update(running=False, last_finished=datetime.utcnow().isoformat())
     return True
+
+async def start_initial_refresh():
+    """Keep startup healthy even when the public SEC service asks us to retry."""
+    try:
+        await run_refresh()
+    except Exception:
+        # run_refresh already records the safe diagnostic in /api/health.
+        pass
 def investor_card(db, investor):
     snapshot = db.scalar(select(PortfolioSnapshot).where(PortfolioSnapshot.investor_id == investor.id).order_by(desc(PortfolioSnapshot.filing_date)))
     perf = db.get(PerformanceCache, {"investor_id": investor.id, "period": "one_year_disclosed_value_change"})
@@ -57,7 +65,7 @@ async def lifespan(app):
     # Ensure the frontend never receives cached cards from a prior import format.
     cache.flushdb()
     scheduler.add_job(run_refresh, "interval", hours=24, id="sec-refresh", replace_existing=True); scheduler.start()
-    asyncio.create_task(run_refresh())
+    asyncio.create_task(start_initial_refresh())
     yield
     scheduler.shutdown(wait=False)
 app = FastAPI(title="Top Investors", lifespan=lifespan)
