@@ -49,11 +49,11 @@ def migrate_import_data():
         conn.execute(text("ALTER TABLE performance_cache ALTER COLUMN period TYPE VARCHAR(64)"))
     with SessionLocal() as db:
         version = db.get(AppState, "sec_import_format")
-        if not version or version.value != "5":
-            # Version 5 corrects the SEC value unit, groups amendments by report
-            # period, and keeps options distinct from common-share positions.
+        if not version or version.value != "6":
+            # Version 6 reconciles every information table to the filing's
+            # reported total before records are written.
             db.execute(delete(Holding)); db.execute(delete(PortfolioSnapshot)); db.execute(delete(PerformanceCache))
-            db.merge(AppState(key="sec_import_format", value="5")); db.commit()
+            db.merge(AppState(key="sec_import_format", value="6")); db.commit()
 @asynccontextmanager
 async def lifespan(app):
     migrate_import_data(); seed_investors()

@@ -1,5 +1,6 @@
 """Public SEC Form 13F importer. No paid financial-data provider is used."""
 import asyncio
+import re
 import xml.etree.ElementTree as ET
 from datetime import date, datetime, timedelta
 import httpx
@@ -81,10 +82,12 @@ async def filing_records(client, cik):
             newest_by_period[record["date"]] = record
     return sorted(newest_by_period.values(), key=lambda item:item["date"], reverse=True)[:5]
 
-async def information_table(client, cik, accession):
+async def filing_files(client, cik, accession):
     base = f"https://www.sec.gov/Archives/edgar/data/{int(cik)}/{accession.replace('-', '')}"
     files = (await sec_get(client, f"{base}/index.json")).json().get("directory", {}).get("item", [])
-    names = [file["name"] for file in files]
+    return base, [file["name"] for file in files]
+
+async def information_table(client, base, names):
     candidates = [name for name in names if "infotable" in name.lower() or "informationtable" in name.lower()]
     candidates += [name for name in names if name.lower().endswith(".xml") and name not in candidates]
     for filename in candidates:
@@ -92,9 +95,40 @@ async def information_table(client, cik, accession):
         if "infoTable" in contents or "informationTable" in contents: return contents
     return None
 
-def reported_value(raw_value):
-    """13F information-table values are reported in thousands of dollars."""
-    return raw_value * 1000
+def summary_value_thousands(document):
+    """Read Form 13F's authoritative summary total, which is in thousands."""
+    try:
+        root = ET.fromstring(document)
+        for node in root.iter():
+            if local_name(node.tag).lower() in {"tablevaluetotal", "informationtablevaluetotal"}:
+                return float((node.text or "").replace(",", "").strip())
+    except ET.ParseError:
+        pass
+    match = re.search(r"<tableValueTotal[^>]*>\s*([\d,.]+)", document, flags=re.I)
+    return float(match.group(1).replace(",", "")) if match else None
+
+async def filing_summary_total(client, base, names):
+    primary = [name for name in names if name.lower().endswith((".xml", ".html", ".htm")) and "infotable" not in name.lower() and "informationtable" not in name.lower()]
+    for filename in primary:
+        total = summary_value_thousands((await sec_get(client, f"{base}/{filename}")).text)
+        if total is not None:
+            return total * 1000
+    return None
+
+def select_value_multiplier(raw_total, summary_total):
+    """Normalize only when the filing total proves which scale is correct.
+
+    Standard EDGAR 13F XML uses thousands. The additional candidates make the
+    importer safe for a non-standard archived table without silently guessing.
+    """
+    if not summary_total or not raw_total:
+        return 1000
+    candidates = (1, 1000, 1_000_000)
+    multiplier = min(candidates, key=lambda value: abs(raw_total * value - summary_total))
+    discrepancy = abs(raw_total * multiplier - summary_total) / summary_total
+    if discrepancy > 0.02:
+        raise ValueError(f"Information-table total does not reconcile to the 13F summary ({discrepancy:.2%} difference).")
+    return multiplier
 
 async def import_filing(client, investor, record, ticker_by_name):
     # Most scheduled runs find no new 13F. Check the accession before touching
@@ -103,14 +137,16 @@ async def import_filing(client, investor, record, ticker_by_name):
         existing = db.scalar(select(PortfolioSnapshot).where(PortfolioSnapshot.source_accession_number == record["accession"]))
         if existing:
             return True
-    xml = await information_table(client, investor.cik, record["accession"])
+    base, names = await filing_files(client, investor.cik, record["accession"])
+    xml = await information_table(client, base, names)
     if not xml: return False
+    summary_total = await filing_summary_total(client, base, names)
     grouped = {}
     for node in ET.fromstring(xml).iter():
         if local_name(node.tag) != "infoTable": continue
         company, cusip = text_of(node,"nameOfIssuer"), text_of(node,"cusip")
         shares = float(text_of(node,"sshPrnamt") or 0)
-        value = reported_value(float(text_of(node,"value") or 0))
+        value = float(text_of(node,"value") or 0)
         put_call = text_of(node, "putCall").upper() or None
         security_type = "option" if put_call in {"PUT", "CALL"} else "equity"
         if company and value:
@@ -119,11 +155,14 @@ async def import_filing(client, investor, record, ticker_by_name):
             old = grouped.get(key, (company, cusip, security_type, put_call, 0, 0))
             grouped[key] = (company, cusip, security_type, put_call, old[4] + shares, old[5] + value)
     if not grouped: return False
-    total = sum(row[5] for row in grouped.values())
+    raw_total = sum(row[5] for row in grouped.values())
+    multiplier = select_value_multiplier(raw_total, summary_total)
+    total = raw_total * multiplier
     with SessionLocal() as db:
         snapshot = PortfolioSnapshot(investor_id=investor.id, filing_date=record["date"], quarter=f"{record['date'].year} Q{(record['date'].month-1)//3+1}", total_value=total, source_accession_number=record["accession"])
         db.add(snapshot); db.flush()
-        for company, cusip, security_type, put_call, shares, value in grouped.values():
+        for company, cusip, security_type, put_call, shares, raw_value in grouped.values():
+            value = raw_value * multiplier
             ticker = CUSIP_TICKERS.get(cusip) or ticker_by_name.get(normalize_issuer(company))
             # 13F contains quarter-end market value, not trade execution price.
             # Retain an explicit filing-price proxy only where shares are reported.
