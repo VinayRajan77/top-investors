@@ -1,47 +1,33 @@
 # Top Investors
 
-A local, SEC-only portfolio explorer inspired by the useful interaction patterns of investor-tracking sites. It uses public Form 13F data only—no paid market-data API.
+An investment-research experience for exploring institutional conviction through
+public SEC Form 13F disclosures.
 
-## Run it
+## Highlights
 
-1. Copy the sample configuration if you want to customize it: `Copy-Item backend/.env.example backend/.env`.
-2. Start the data services and API: `docker-compose up -d --build`.
-3. In a second terminal, start the website: `cd frontend`, `npm install`, then `npm run dev`.
-4. Open `http://localhost:3000/investors`.
+- Discover notable investment managers and their latest reported portfolios.
+- Compare holdings between filings to surface new, increased, reduced, and
+  unchanged positions.
+- Explore security pages with interactive multi-year price charts and disclosed
+  institutional activity.
+- Review portfolio-history trends and carefully labelled disclosed-value change.
+- Search investors, funds, tickers, and reported issuers from one interface.
 
-The backend seeds the curated investor list immediately and begins its first 13F pull at startup. An initial refresh can take a few minutes because SEC requests are deliberately kept below the 10 requests/second limit. To manually start a refresh:
+## Product approach
 
-```powershell
-curl.exe -X POST http://localhost:8000/api/admin/refresh -H "X-Admin-Token: change-me"
-```
+Top Investors treats 13F data as what it is: a delayed, long-only disclosure
+snapshot—not a real-time trading feed, audited fund return, or complete picture
+of a manager's portfolio. Public SEC data is paired with delayed end-of-day
+market history and clear source notes throughout the experience.
 
-Change `ADMIN_REFRESH_TOKEN` before exposing the service beyond your machine. The frontend URL is controlled by `frontend/.env.local` (`NEXT_PUBLIC_API_URL`).
+## Technical focus
 
-## Publish the API with Render
+Built with Next.js, TypeScript, FastAPI, PostgreSQL, Redis-compatible caching,
+and a snapshot publishing workflow for fast public delivery.
 
-This repository includes a `render.yaml` Blueprint that deploys the API, a Render
-Postgres database, and a Render Key Value cache together. It keeps database
-credentials and the administrator token out of Git.
+## Data disclaimer
 
-1. Push this project to GitHub, then in Render choose **New → Blueprint** and
-   select the repository.
-2. Render reads `render.yaml`. Enter a meaningful contact address for
-   `SEC_USER_AGENT` and set `CORS_ORIGINS` to your Vercel site URL, for example
-   `https://topinvestors.vercel.app`. Add `http://localhost:3000` too if you
-   want local development to keep working.
-3. After deployment, open `https://<your-render-service>.onrender.com/api/health`.
-   A successful response means the API is ready.
-4. In the Vercel project for `frontend`, set `NEXT_PUBLIC_API_URL` to that
-   Render URL and redeploy the frontend.
-
-The included Free plans are appropriate for a preview. Render's free Postgres
-database expires after 30 days and does not include backups, so use a paid
-database before relying on this as a production service.
-
-## Important data notes
-
-- A 13F reports long U.S. equity holdings quarterly; it does not represent a complete fund portfolio, true short activity, cash, or real-time prices.
-- “Portfolio change” compares total disclosed value to the previous filing. It is an approximation, **not** a true time-weighted return.
-- SEC's free `company_tickers.json` does not provide a reliable CUSIP-to-ticker map. The importer retains the reported CUSIP rather than inventing a ticker.
-- Purchase prices are not present in Form 13F, so the UI explicitly leaves them unavailable. A future free, verified historical-price integration could estimate them.
-- Holdings with a verified symbol open a security page with a free, delayed end-of-day chart and the tracked investors currently holding it. It is intentionally not presented as real-time market data.
+Form 13F reports certain U.S. equity holdings quarterly. It does not disclose
+short positions, cash, most derivatives, transaction execution prices, or a
+manager's complete portfolio. Figures in this project are for research and
+educational use only, not investment advice.

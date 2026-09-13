@@ -53,6 +53,7 @@ def migrate_import_data():
     Base.metadata.create_all(engine)
     with engine.begin() as conn:
         conn.execute(text("ALTER TABLE holdings ADD COLUMN IF NOT EXISTS cusip VARCHAR(20)"))
+        conn.execute(text("ALTER TABLE performance_cache ALTER COLUMN period TYPE VARCHAR(64)"))
     with SessionLocal() as db:
         version = db.get(AppState, "sec_import_format")
         if not version or version.value != "3":
@@ -83,7 +84,9 @@ def health(db: Session = Depends(db_session)):
 @app.get("/api/investors")
 def investors(sort: str = Query("popular"), limit: int = Query(50, le=100), db: Session = Depends(db_session)):
     key=f"investors:{sort}:{limit}"; saved=cache.get(key)
-    if saved: return json.loads(saved)
+    # During the first background import, show newly completed managers instead
+    # of serving a minute-old directory response.
+    if saved and not refresh_state["running"]: return json.loads(saved)
     items=[investor_card(db, i) for i in db.scalars(select(Investor)).all()]
     category={"growth":"growth","value":"value","short_sellers":"short_seller","long_term":"long_term"}.get(sort)
     if category: items=[i for i in items if category in i["categories"]]
@@ -93,7 +96,9 @@ def investors(sort: str = Query("popular"), limit: int = Query(50, le=100), db: 
         items=[item for item in items if item["performance"] is not None]
         items.sort(key=lambda x: x["performance"], reverse=True)
     else: items.sort(key=lambda x:x["total_value"], reverse=True)
-    data={"items":items[:limit],"sort":sort,"refreshing":refresh_state["running"]}; cache.setex(key,60,json.dumps(data)); return data
+    data={"items":items[:limit],"sort":sort,"refreshing":refresh_state["running"]}
+    if not refresh_state["running"]: cache.setex(key,60,json.dumps(data))
+    return data
 @app.get("/api/investors/{slug}")
 def investor_detail(slug: str, db: Session = Depends(db_session)):
     investor=db.scalar(select(Investor).where(Investor.slug==slug))

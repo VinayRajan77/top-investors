@@ -40,7 +40,8 @@ class Holding(Base):
 class PerformanceCache(Base):
     __tablename__ = "performance_cache"
     investor_id: Mapped[int] = mapped_column(ForeignKey("investors.id"), primary_key=True)
-    period: Mapped[str] = mapped_column(String(20), primary_key=True)
+    # The descriptive annual-comparison key is longer than 20 characters.
+    period: Mapped[str] = mapped_column(String(64), primary_key=True)
     return_pct: Mapped[float] = mapped_column(Float)
     calculated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 class AppState(Base):
