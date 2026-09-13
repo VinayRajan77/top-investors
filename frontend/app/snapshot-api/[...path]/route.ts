@@ -27,7 +27,10 @@ async function live(path: string, request: NextRequest) {
 }
 
 export async function GET(request: NextRequest, { params }: { params: { path: string[] } }) {
-  const path = params.path;
+  // Pages keep the same `/api/...` shape they used before the snapshot layer.
+  // Accept that prefix here so the static snapshot serves those requests instead
+  // of falling through to the remote API.
+  const path = params.path[0] === 'api' ? params.path.slice(1) : params.path;
   if (path[0] === 'investors' && path.length === 1) {
     const sort = request.nextUrl.searchParams.get('sort') || 'popular';
     return response({ items: data.lists[sort] || [], sort, refreshing: false, generated_at: data.generated_at });
