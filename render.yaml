@@ -32,6 +32,25 @@ services:
     maxmemoryPolicy: allkeys-lru
     ipAllowList: []
 
+  - type: web
+    name: topinvestors-web
+    runtime: node
+    region: oregon
+    plan: free
+    rootDir: frontend
+    buildCommand: npm ci && npm run build
+    startCommand: npm run start -- -p $PORT
+    healthCheckPath: /investors
+    autoDeploy: true
+    envVars:
+      # Browser requests stay on the website's origin. Next.js forwards them
+      # across Render's private network, so no public CORS exception is needed.
+      - key: API_PROXY_HOST
+        fromService:
+          type: web
+          name: topinvestors-api
+          property: hostport
+
 databases:
   - name: topinvestors-db
     plan: free

@@ -14,7 +14,7 @@ from .scraper import refresh_all, seed_investors
 
 cache = Redis.from_url(settings.redis_url, decode_responses=True)
 scheduler = AsyncIOScheduler()
-refresh_state = {"running": False, "last_started": None, "last_finished": None, "last_error": None}
+refresh_state = {"running": False, "last_started": None, "last_finished": None, "last_error": None, "last_import": None}
 def db_session():
     db = SessionLocal()
     try: yield db
@@ -25,7 +25,7 @@ async def run_refresh():
     if refresh_state["running"]: return False
     refresh_state.update(running=True, last_started=datetime.utcnow().isoformat(), last_error=None)
     try:
-        await refresh_all()
+        refresh_state["last_import"] = await refresh_all()
         cache.flushdb()
     except Exception as exc:
         refresh_state["last_error"] = str(exc)

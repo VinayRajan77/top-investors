@@ -141,7 +141,22 @@ async def refresh_all():
         async def refresh_investor(investor):
             try:
                 async with semaphore:
-                    for record in await filing_records(client, investor.cik): await import_filing(client, investor, record, titles)
+                    records = await filing_records(client, investor.cik)
+                    imported = 0
+                    for record in records:
+                        imported += int(bool(await import_filing(client, investor, record, titles)))
                     calculate_performance(investor.id)
-            except Exception as exc: print(f"SEC refresh failed for {investor.slug}: {exc}")
-        await asyncio.gather(*(refresh_investor(investor) for investor in investors))
+                    return {"slug": investor.slug, "filings_found": len(records), "filings_imported": imported, "error": None}
+            except Exception as exc:
+                print(f"SEC refresh failed for {investor.slug}: {exc}")
+                return {"slug": investor.slug, "filings_found": 0, "filings_imported": 0, "error": str(exc)}
+        results = await asyncio.gather(*(refresh_investor(investor) for investor in investors))
+    summary = {
+        "managers_checked": len(results),
+        "filings_found": sum(result["filings_found"] for result in results),
+        "filings_imported": sum(result["filings_imported"] for result in results),
+        "failures": [{"slug": result["slug"], "error": result["error"]} for result in results if result["error"]],
+    }
+    if not summary["filings_found"]:
+        raise RuntimeError("The SEC importer found no 13F filing records; inspect the service logs for manager-level errors.")
+    return summary
