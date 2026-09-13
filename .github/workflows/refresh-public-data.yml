@@ -85,10 +85,11 @@ jobs:
           git push
 
       - name: Notify a configured webhook when the refresh fails
-        if: failure() && secrets.ALERT_WEBHOOK_URL != ''
+        if: failure()
         env:
           ALERT_WEBHOOK_URL: ${{ secrets.ALERT_WEBHOOK_URL }}
         run: |
+          test -n "$ALERT_WEBHOOK_URL" || exit 0
           curl --fail --silent --show-error -X POST "$ALERT_WEBHOOK_URL" \
             -H 'Content-Type: application/json' \
             -d '{"text":"Top Investors: the scheduled public-data refresh failed. Open the GitHub Actions run for details."}'
