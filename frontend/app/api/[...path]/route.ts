@@ -3,8 +3,11 @@ import { NextRequest } from 'next/server';
 export const dynamic = 'force-dynamic';
 
 function apiBase() {
+  // A public Render API URL is reliable from browser and server runtimes.
+  // Use the private host only as a fallback for environments that provide it.
+  if (process.env.NEXT_PUBLIC_API_URL) return process.env.NEXT_PUBLIC_API_URL;
   if (process.env.API_PROXY_HOST) return `http://${process.env.API_PROXY_HOST}`;
-  return process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
+  return 'http://localhost:8000';
 }
 
 async function forward(request: NextRequest, { params }: { params: { path: string[] } }) {

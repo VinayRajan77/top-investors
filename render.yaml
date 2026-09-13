@@ -43,13 +43,8 @@ services:
     healthCheckPath: /investors
     autoDeploy: true
     envVars:
-      # Browser requests stay on the website's origin. Next.js forwards them
-      # across Render's private network, so no public CORS exception is needed.
-      - key: API_PROXY_HOST
-        fromService:
-          type: web
-          name: topinvestors-api
-          property: hostport
+      - key: NEXT_PUBLIC_API_URL
+        value: https://topinvestors-api.onrender.com
 
 databases:
   - name: topinvestors-db
