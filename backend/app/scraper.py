@@ -56,7 +56,12 @@ def text_of(node, tag):
     return ""
 
 async def filing_records(client, cik):
-    """Return five recent 13F reports, including amendments and archived files."""
+    """Return the latest filing for each of five reported periods.
+
+    SEC submissions list amendments beside the original report. Keeping every
+    accession turns one quarter into several fake portfolio-history points, so
+    we retain the newest filing for each report period instead.
+    """
     submission = (await sec_get(client, f"https://data.sec.gov/submissions/CIK{cik.zfill(10)}.json")).json()
     groups = [submission.get("filings", {}).get("recent", {})]
     for archive in submission.get("filings", {}).get("files", []):
@@ -66,8 +71,15 @@ async def filing_records(client, cik):
     for group in groups:
         for i, form in enumerate(group.get("form", [])):
             if form.startswith("13F-HR"):
-                records.append({"accession":group["accessionNumber"][i], "date":date.fromisoformat(group["filingDate"][i])})
-    return sorted({item["accession"]:item for item in records}.values(), key=lambda item:item["date"], reverse=True)[:5]
+                filed = date.fromisoformat(group["filingDate"][i])
+                report_date = group.get("reportDate", [None] * len(group["form"]))[i] or group["filingDate"][i]
+                records.append({"accession":group["accessionNumber"][i], "filed":filed, "date":date.fromisoformat(report_date), "form":form})
+    newest_by_period = {}
+    for record in records:
+        previous = newest_by_period.get(record["date"])
+        if not previous or record["filed"] > previous["filed"]:
+            newest_by_period[record["date"]] = record
+    return sorted(newest_by_period.values(), key=lambda item:item["date"], reverse=True)[:5]
 
 async def information_table(client, cik, accession):
     base = f"https://www.sec.gov/Archives/edgar/data/{int(cik)}/{accession.replace('-', '')}"
@@ -80,11 +92,17 @@ async def information_table(client, cik, accession):
         if "infoTable" in contents or "informationTable" in contents: return contents
     return None
 
-def reported_value(raw_value, filing_date):
-    # Modern 13F XML reports dollars. Legacy reports before 2023 used thousands.
-    return raw_value * 1000 if filing_date.year < 2023 else raw_value
+def reported_value(raw_value):
+    """13F information-table values are reported in thousands of dollars."""
+    return raw_value * 1000
 
 async def import_filing(client, investor, record, ticker_by_name):
+    # Most scheduled runs find no new 13F. Check the accession before touching
+    # an archive document so the daily health check remains light on EDGAR.
+    with SessionLocal() as db:
+        existing = db.scalar(select(PortfolioSnapshot).where(PortfolioSnapshot.source_accession_number == record["accession"]))
+        if existing:
+            return True
     xml = await information_table(client, investor.cik, record["accession"])
     if not xml: return False
     grouped = {}
@@ -92,23 +110,25 @@ async def import_filing(client, investor, record, ticker_by_name):
         if local_name(node.tag) != "infoTable": continue
         company, cusip = text_of(node,"nameOfIssuer"), text_of(node,"cusip")
         shares = float(text_of(node,"sshPrnamt") or 0)
-        value = reported_value(float(text_of(node,"value") or 0), record["date"])
+        value = reported_value(float(text_of(node,"value") or 0))
+        put_call = text_of(node, "putCall").upper() or None
+        security_type = "option" if put_call in {"PUT", "CALL"} else "equity"
         if company and value:
-            key = cusip or company  # Combine split reporting-manager rows.
-            old = grouped.get(key, (company, cusip, 0, 0))
-            grouped[key] = (company, cusip, old[2] + shares, old[3] + value)
+            # Do not merge option contracts into the common-share position.
+            key = (cusip or company, security_type, put_call)
+            old = grouped.get(key, (company, cusip, security_type, put_call, 0, 0))
+            grouped[key] = (company, cusip, security_type, put_call, old[4] + shares, old[5] + value)
     if not grouped: return False
-    total = sum(row[3] for row in grouped.values())
+    total = sum(row[5] for row in grouped.values())
     with SessionLocal() as db:
-        if db.scalar(select(PortfolioSnapshot).where(PortfolioSnapshot.source_accession_number == record["accession"])): return True
         snapshot = PortfolioSnapshot(investor_id=investor.id, filing_date=record["date"], quarter=f"{record['date'].year} Q{(record['date'].month-1)//3+1}", total_value=total, source_accession_number=record["accession"])
         db.add(snapshot); db.flush()
-        for company, cusip, shares, value in grouped.values():
+        for company, cusip, security_type, put_call, shares, value in grouped.values():
             ticker = CUSIP_TICKERS.get(cusip) or ticker_by_name.get(normalize_issuer(company))
             # 13F contains quarter-end market value, not trade execution price.
             # Retain an explicit filing-price proxy only where shares are reported.
             filing_price = value / shares if shares else None
-            db.add(Holding(snapshot_id=snapshot.id, ticker=ticker, cusip=cusip or None, company_name=company, shares=shares, market_value=value, estimated_purchase_price=filing_price, pct_of_portfolio=value / total * 100))
+            db.add(Holding(snapshot_id=snapshot.id, ticker=ticker, cusip=cusip or None, company_name=company, security_type=security_type, put_call=put_call, shares=shares, market_value=value, estimated_purchase_price=filing_price, pct_of_portfolio=value / total * 100))
         db.commit()
     return True
 

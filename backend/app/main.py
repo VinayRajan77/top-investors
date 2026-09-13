@@ -1,7 +1,6 @@
 import asyncio, json
 from contextlib import asynccontextmanager
 from datetime import datetime
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from fastapi import Depends, FastAPI, Header, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from redis import Redis
@@ -13,7 +12,6 @@ from .market import company_overview, quote_history
 from .scraper import refresh_all, seed_investors
 
 cache = Redis.from_url(settings.redis_url, decode_responses=True)
-scheduler = AsyncIOScheduler()
 refresh_state = {"running": False, "last_started": None, "last_finished": None, "last_error": None, "last_import": None}
 def db_session():
     db = SessionLocal()
@@ -34,13 +32,6 @@ async def run_refresh():
         refresh_state.update(running=False, last_finished=datetime.utcnow().isoformat())
     return True
 
-async def start_initial_refresh():
-    """Keep startup healthy even when the public SEC service asks us to retry."""
-    try:
-        await run_refresh()
-    except Exception:
-        # run_refresh already records the safe diagnostic in /api/health.
-        pass
 def investor_card(db, investor):
     snapshot = db.scalar(select(PortfolioSnapshot).where(PortfolioSnapshot.investor_id == investor.id).order_by(desc(PortfolioSnapshot.filing_date)))
     perf = db.get(PerformanceCache, {"investor_id": investor.id, "period": "one_year_disclosed_value_change"})
@@ -53,22 +44,21 @@ def migrate_import_data():
     Base.metadata.create_all(engine)
     with engine.begin() as conn:
         conn.execute(text("ALTER TABLE holdings ADD COLUMN IF NOT EXISTS cusip VARCHAR(20)"))
+        conn.execute(text("ALTER TABLE holdings ADD COLUMN IF NOT EXISTS security_type VARCHAR(20) NOT NULL DEFAULT 'equity'"))
+        conn.execute(text("ALTER TABLE holdings ADD COLUMN IF NOT EXISTS put_call VARCHAR(8)"))
         conn.execute(text("ALTER TABLE performance_cache ALTER COLUMN period TYPE VARCHAR(64)"))
     with SessionLocal() as db:
         version = db.get(AppState, "sec_import_format")
-        if not version or version.value != "3":
-            # Version 1 multiplied modern SEC values by 1,000 and stored invalid data.
+        if not version or version.value != "5":
+            # Version 5 corrects the SEC value unit, groups amendments by report
+            # period, and keeps options distinct from common-share positions.
             db.execute(delete(Holding)); db.execute(delete(PortfolioSnapshot)); db.execute(delete(PerformanceCache))
-            db.merge(AppState(key="sec_import_format", value="3")); db.commit()
+            db.merge(AppState(key="sec_import_format", value="5")); db.commit()
 @asynccontextmanager
 async def lifespan(app):
     migrate_import_data(); seed_investors()
-    # Ensure the frontend never receives cached cards from a prior import format.
     cache.flushdb()
-    scheduler.add_job(run_refresh, "interval", hours=24, id="sec-refresh", replace_existing=True); scheduler.start()
-    asyncio.create_task(start_initial_refresh())
     yield
-    scheduler.shutdown(wait=False)
 app = FastAPI(title="Top Investors", lifespan=lifespan)
 # The web app runs separately on localhost:3000 during development.
 app.add_middleware(
@@ -114,7 +104,8 @@ def investor_detail(slug: str, db: Session = Depends(db_session)):
         if not prior: return {"action":"new", "shares":money(holding.shares)}
         delta = money(holding.shares) - money(prior.shares)
         return {"action":"increased" if delta > 0 else "reduced" if delta < 0 else "held", "shares":abs(delta)}
-    result["holdings"]=[] if not snapshot else [{"ticker":h.ticker,"cusip":h.cusip,"company_name":h.company_name,"shares":money(h.shares),"market_value":money(h.market_value),"pct_of_portfolio":h.pct_of_portfolio,"estimated_purchase_price":None if h.estimated_purchase_price is None else money(h.estimated_purchase_price),"last_transaction":activity(h)} for h in db.scalars(select(Holding).where(Holding.snapshot_id==snapshot.id).order_by(desc(Holding.market_value))).all()]
+    result["source_url"] = None if not snapshot else f"https://www.sec.gov/Archives/edgar/data/{int(investor.cik)}/{snapshot.source_accession_number.replace('-', '')}/{snapshot.source_accession_number}-index.html"
+    result["holdings"]=[] if not snapshot else [{"ticker":h.ticker,"cusip":h.cusip,"company_name":h.company_name,"security_type":h.security_type,"put_call":h.put_call,"shares":money(h.shares),"market_value":money(h.market_value),"pct_of_portfolio":h.pct_of_portfolio,"estimated_purchase_price":None if h.estimated_purchase_price is None else money(h.estimated_purchase_price),"last_transaction":activity(h)} for h in db.scalars(select(Holding).where(Holding.snapshot_id==snapshot.id).order_by(desc(Holding.market_value))).all()]
     result["history"]=[{"filing_date":s.filing_date.isoformat(),"total_value":money(s.total_value),"holding_count":len(s.holdings)} for s in reversed(snapshots)]
     return result
 @app.get("/api/search")

@@ -32,6 +32,8 @@ class Holding(Base):
     ticker: Mapped[str | None] = mapped_column(String(20), nullable=True)
     cusip: Mapped[str | None] = mapped_column(String(20), nullable=True)
     company_name: Mapped[str] = mapped_column(Text)
+    security_type: Mapped[str] = mapped_column(String(20), default="equity")
+    put_call: Mapped[str | None] = mapped_column(String(8), nullable=True)
     shares: Mapped[float] = mapped_column(Numeric(22, 2))
     market_value: Mapped[float] = mapped_column(Numeric(20, 2))
     estimated_purchase_price: Mapped[float | None] = mapped_column(Numeric(14, 2), nullable=True)

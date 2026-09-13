@@ -1,0 +1,94 @@
+name: Refresh public investment data
+
+on:
+  schedule:
+    # GitHub Actions uses UTC. These two runs, plus the timezone check below,
+    # keep the task at approximately 9 PM America/New_York through DST changes.
+    - cron: '17 1,2 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: public-data-refresh
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+    steps:
+      - name: Confirm the scheduled local time
+        id: local-time
+        run: |
+          if [ "$(TZ=America/New_York date +%H)" = "21" ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/checkout@v4
+        if: steps.local-time.outputs.run == 'true' || github.event_name == 'workflow_dispatch'
+
+      - name: Start the SEC import
+        if: steps.local-time.outputs.run == 'true' || github.event_name == 'workflow_dispatch'
+        env:
+          API_URL: ${{ secrets.RENDER_API_URL }}
+          REFRESH_TOKEN: ${{ secrets.RENDER_REFRESH_TOKEN }}
+        run: |
+          curl --fail --retry 5 --retry-all-errors --silent --show-error \
+            -X POST "$API_URL/api/admin/refresh" \
+            -H "X-Admin-Token: $REFRESH_TOKEN"
+
+      - name: Wait for the import to finish
+        if: steps.local-time.outputs.run == 'true' || github.event_name == 'workflow_dispatch'
+        env:
+          API_URL: ${{ secrets.RENDER_API_URL }}
+        run: |
+          for attempt in {1..80}; do
+            health=$(curl --fail --retry 3 --retry-all-errors --silent --show-error "$API_URL/api/health")
+            running=$(jq -r '.refresh.running' <<< "$health")
+            error=$(jq -r '.refresh.last_error // empty' <<< "$health")
+            if [ "$running" = "false" ]; then
+              test -z "$error" || { echo "$error"; exit 1; }
+              exit 0
+            fi
+            sleep 30
+          done
+          echo "SEC import exceeded the 40-minute workflow window."
+          exit 1
+
+      - uses: actions/setup-node@v4
+        if: steps.local-time.outputs.run == 'true' || github.event_name == 'workflow_dispatch'
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Publish the new website snapshot
+        if: steps.local-time.outputs.run == 'true' || github.event_name == 'workflow_dispatch'
+        working-directory: frontend
+        env:
+          SNAPSHOT_API_URL: ${{ secrets.RENDER_API_URL }}
+        run: |
+          npm ci
+          npm run snapshot:publish
+
+      - name: Commit the refreshed snapshot
+        if: steps.local-time.outputs.run == 'true' || github.event_name == 'workflow_dispatch'
+        run: |
+          git config user.name "top-investors-bot"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add frontend/data/published-snapshot.json
+          git diff --cached --quiet || git commit -m "Refresh published SEC data"
+          git push
+
+      - name: Notify a configured webhook when the refresh fails
+        if: failure() && secrets.ALERT_WEBHOOK_URL != ''
+        env:
+          ALERT_WEBHOOK_URL: ${{ secrets.ALERT_WEBHOOK_URL }}
+        run: |
+          curl --fail --silent --show-error -X POST "$ALERT_WEBHOOK_URL" \
+            -H 'Content-Type: application/json' \
+            -d '{"text":"Top Investors: the scheduled public-data refresh failed. Open the GitHub Actions run for details."}'

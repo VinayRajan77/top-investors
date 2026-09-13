@@ -1,2 +1,2 @@
-export type Holding={ticker:string|null;cusip?:string|null;company_name:string;shares?:number;market_value?:number;pct_of_portfolio?:number;estimated_purchase_price?:number|null;last_transaction?:{action:string;shares:number}};
+export type Holding={ticker:string|null;cusip?:string|null;company_name:string;security_type?:string;put_call?:string|null;shares?:number;market_value?:number;pct_of_portfolio?:number;estimated_purchase_price?:number|null;last_transaction?:{action:string;shares:number}};
 export type Investor={slug:string;name:string;fund_name:string;categories:string[];performance:number|null;total_value:number;holdings:Holding[];holding_count:number;filing_date:string|null;data_status?:string};

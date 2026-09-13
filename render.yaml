@@ -32,20 +32,6 @@ services:
     maxmemoryPolicy: allkeys-lru
     ipAllowList: []
 
-  - type: web
-    name: topinvestors-web
-    runtime: node
-    region: oregon
-    plan: free
-    rootDir: frontend
-    buildCommand: npm ci && npm run build
-    startCommand: npm run start -- -p $PORT
-    healthCheckPath: /investors
-    autoDeploy: true
-    envVars:
-      - key: NEXT_PUBLIC_API_URL
-        value: https://topinvestors-api.onrender.com
-
 databases:
   - name: topinvestors-db
     plan: free
