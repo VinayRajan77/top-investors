@@ -1,0 +1,23 @@
+# Secrets and machine-specific configuration
+.env
+.env.*
+!.env.example
+
+# JavaScript dependencies and generated Next.js output
+node_modules/
+.next/
+.npm-cache/
+*.tsbuildinfo
+
+# Python bytecode and local environments
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Local databases, logs, and editor files
+*.log
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
