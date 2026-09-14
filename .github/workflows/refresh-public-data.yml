@@ -47,13 +47,17 @@ jobs:
           API_URL: ${{ secrets.RENDER_API_URL }}
         run: |
           for attempt in {1..80}; do
-            health=$(curl --fail --retry 3 --retry-all-errors --silent --show-error "$API_URL/api/health")
-            running=$(jq -r '.refresh.running' <<< "$health")
-            error=$(jq -r '.refresh.last_error // empty' <<< "$health")
+            # Free Render services can briefly return 502 while the import keeps
+            # running. Treat an unavailable health endpoint as a pending check.
+            health=$(curl --silent --show-error --connect-timeout 15 --max-time 30 \
+              "$API_URL/api/health" 2>/dev/null || true)
+            running=$(jq -r '.refresh.running // empty' <<< "$health" 2>/dev/null || true)
+            error=$(jq -r '.refresh.last_error // empty' <<< "$health" 2>/dev/null || true)
             if [ "$running" = "false" ]; then
               test -z "$error" || { echo "$error"; exit 1; }
               exit 0
             fi
+            echo "Import is still running or the service is temporarily unavailable (check $attempt/80)."
             sleep 30
           done
           echo "SEC import exceeded the 40-minute workflow window."
