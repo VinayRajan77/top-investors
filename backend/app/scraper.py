@@ -108,27 +108,38 @@ def summary_value_thousands(document):
     return float(match.group(1).replace(",", "")) if match else None
 
 async def filing_summary_total(client, base, names):
+    """Return the summary total in the same units as the info-table (thousands).
+
+    Do not scale here: `select_value_multiplier` compares this directly against
+    `raw_total`, which is the sum of info-table `<value>` fields and is itself
+    still in thousands at that point. Scaling to dollars here previously caused
+    every filing to reconcile at multiplier=1000 regardless of the true scale,
+    inflating every stored total by 1000x.
+    """
     primary = [name for name in names if name.lower().endswith((".xml", ".html", ".htm")) and "infotable" not in name.lower() and "informationtable" not in name.lower()]
     for filename in primary:
         total = summary_value_thousands((await sec_get(client, f"{base}/{filename}")).text)
         if total is not None:
-            return total * 1000
+            return total
     return None
 
 def select_value_multiplier(raw_total, summary_total):
-    """Normalize only when the filing total proves which scale is correct.
+    """Pick the dollars-per-raw-unit multiplier, using the summary total to confirm scale.
 
-    Standard EDGAR 13F XML uses thousands. The additional candidates make the
-    importer safe for a non-standard archived table without silently guessing.
+    Both raw_total (summed info-table <value> fields) and summary_total
+    (tableValueTotal) are in the SEC's native thousands-of-dollars units at
+    this point, so a correctly-scaled filing reconciles at candidate=1 and the
+    final dollar multiplier is candidate * 1000. The additional candidates
+    guard against non-standard archived tables without silently guessing.
     """
     if not summary_total or not raw_total:
         return 1000
     candidates = (1, 1000, 1_000_000)
-    multiplier = min(candidates, key=lambda value: abs(raw_total * value - summary_total))
-    discrepancy = abs(raw_total * multiplier - summary_total) / summary_total
+    candidate = min(candidates, key=lambda value: abs(raw_total * value - summary_total))
+    discrepancy = abs(raw_total * candidate - summary_total) / summary_total
     if discrepancy > 0.02:
         raise ValueError(f"Information-table total does not reconcile to the 13F summary ({discrepancy:.2%} difference).")
-    return multiplier
+    return candidate * 1000
 
 async def import_filing(client, investor, record, ticker_by_name):
     # Most scheduled runs find no new 13F. Check the accession before touching
